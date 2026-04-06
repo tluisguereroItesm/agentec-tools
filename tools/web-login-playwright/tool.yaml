@@ -1,0 +1,45 @@
+name: web-login-playwright
+version: 0.1.0
+type: tool
+runtime: docker
+entrypoint: node dist/index.js
+description: ejecuta un flujo mínimo de login web con playwright y genera evidencia
+input_schema:
+  type: object
+  required:
+    - url
+    - username
+    - password
+    - usernameSelector
+    - passwordSelector
+    - submitSelector
+  properties:
+    url:
+      type: string
+    username:
+      type: string
+    password:
+      type: string
+    usernameSelector:
+      type: string
+    passwordSelector:
+      type: string
+    submitSelector:
+      type: string
+    successIndicator:
+      type: string
+    headless:
+      type: boolean
+    timeoutMs:
+      type: integer
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    message:
+      type: string
+    screenshotPath:
+      type: string
+    resultPath:
+      type: string

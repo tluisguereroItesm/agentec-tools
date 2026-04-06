@@ -1,0 +1,17 @@
+{
+  "name": "web-login-playwright",
+  "version": "0.1.0",
+  "description": "Tool de login web con Playwright",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js input.json"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.15.3"
+  }
+}
