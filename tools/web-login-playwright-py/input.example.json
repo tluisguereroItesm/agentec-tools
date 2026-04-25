@@ -1,0 +1,11 @@
+{
+  "url": "https://the-internet.herokuapp.com/login",
+  "username": "tomsmith",
+  "password": "SuperSecretPassword!",
+  "usernameSelector": "#username",
+  "passwordSelector": "#password",
+  "submitSelector": "button[type='submit']",
+  "successIndicator": ".flash.success",
+  "headless": true,
+  "timeoutMs": 30000
+}

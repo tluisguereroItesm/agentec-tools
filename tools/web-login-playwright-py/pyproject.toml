@@ -1,0 +1,11 @@
+[project]
+name = "web-login-playwright-py"
+version = "0.1.0"
+description = "Tool Python de login web con Playwright"
+requires-python = ">=3.11"
+dependencies = [
+  "playwright>=1.52.0",
+]
+
+[project.scripts]
+web-login-playwright-py = "src.main:cli"

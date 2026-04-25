@@ -1,0 +1,42 @@
+name: doc-reader
+version: 0.1.0
+type: tool
+runtime: docker
+entrypoint: python src/main.py /input.json
+description: lee y extrae texto estructurado de archivos locales (PDF, DOCX, XLSX, TXT, MD) y devuelve contenido, conteo de páginas y palabras
+input_schema:
+  type: object
+  required:
+    - filePath
+  properties:
+    filePath:
+      type: string
+    maxChars:
+      type: integer
+    includeMetadata:
+      type: boolean
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    message:
+      type: string
+    content:
+      type: string
+    pageCount:
+      type: integer
+    wordCount:
+      type: integer
+    charCount:
+      type: integer
+    fileType:
+      type: string
+    truncated:
+      type: boolean
+    extractedAt:
+      type: string
+    artifactPath:
+      type: string
+    errorType:
+      type: string

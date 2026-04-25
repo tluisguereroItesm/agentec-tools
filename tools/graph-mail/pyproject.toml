@@ -1,0 +1,9 @@
+[project]
+name = "graph-mail"
+version = "0.1.0"
+description = "Tool reusable de correo Microsoft Graph"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+graph-mail = "src.main:cli"

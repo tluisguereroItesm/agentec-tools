@@ -1,0 +1,58 @@
+name: graph-mail
+version: 0.1.0
+type: tool
+runtime: docker
+entrypoint: python src/main.py /input.json
+description: consulta y analiza correo Microsoft 365 vía Microsoft Graph usando perfiles reutilizables de tenant
+input_schema:
+  type: object
+  required:
+    - action
+  properties:
+    action:
+      type: string
+    profile:
+      type: string
+    configFile:
+      type: string
+    user:
+      type: string
+    graphUserId:
+      type: string
+    top:
+      type: integer
+    sender:
+      type: string
+    query:
+      type: string
+    id:
+      type: string
+    project:
+      type: string
+    days:
+      type: integer
+    period:
+      type: string
+    tenantIdOverride:
+      type: string
+    clientIdOverride:
+      type: string
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    message:
+      type: string
+    data:
+      type: object
+    profile:
+      type: string
+    tenantId:
+      type: string
+    backend:
+      type: string
+    artifactPath:
+      type: string
+    errorType:
+      type: string

@@ -1,0 +1,8 @@
+services:
+  web-login-playwright:
+    build: .
+    container_name: web-login-playwright
+    volumes:
+      - ./artifacts:/app/artifacts
+    env_file:
+      - .env.example

@@ -1,0 +1,20 @@
+{
+  "name": "web-login-playwright",
+  "version": "0.1.0",
+  "description": "Tool de login web con Playwright",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js input.json",
+    "mcp": "node dist/mcp-server.js",
+    "start:py-wrapper": "node scripts/python-wrapper.js input.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "playwright": "^1.52.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

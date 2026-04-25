@@ -1,0 +1,11 @@
+[project]
+name = "graph-files"
+version = "0.1.0"
+description = "Tool reusable de archivos Microsoft Graph"
+requires-python = ">=3.11"
+dependencies = [
+  "pypdf>=4.2.0",
+]
+
+[project.scripts]
+graph-files = "src.main:cli"

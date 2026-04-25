@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+artifacts/
+playwright-report/
+test-results/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/

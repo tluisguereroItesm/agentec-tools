@@ -1,0 +1,40 @@
+name: graph-sharepoint-search
+version: 0.1.0
+type: tool
+runtime: docker
+entrypoint: python src/main.py /input.json
+description: búsqueda semántica en todo SharePoint y OneDrive de la organización via Microsoft Search API
+input_schema:
+  type: object
+  properties:
+    action:
+      type: string
+    profile:
+      type: string
+    query:
+      type: string
+    top:
+      type: integer
+    contentSources:
+      type: array
+      items:
+        type: string
+    user:
+      type: string
+    tenantIdOverride:
+      type: string
+    clientIdOverride:
+      type: string
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    message:
+      type: string
+    data:
+      type: object
+    artifactPath:
+      type: string
+    errorType:
+      type: string

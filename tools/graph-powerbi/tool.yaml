@@ -1,0 +1,50 @@
+name: graph-powerbi
+version: 0.1.0
+type: tool
+runtime: docker
+entrypoint: python src/main.py /input.json
+description: accede a workspaces, reportes, dashboards y datasets de Power BI — consulta datos reales con DAX, abre reportes y gestiona refreshes
+input_schema:
+  type: object
+  properties:
+    action:
+      type: string
+    profile:
+      type: string
+    workspaceId:
+      type: string
+    reportId:
+      type: string
+    dashboardId:
+      type: string
+    datasetId:
+      type: string
+    dax:
+      type: string
+    search:
+      type: string
+    query:
+      type: string
+    trigger:
+      type: boolean
+    top:
+      type: integer
+    user:
+      type: string
+    tenantIdOverride:
+      type: string
+    clientIdOverride:
+      type: string
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    message:
+      type: string
+    data:
+      type: object
+    artifactPath:
+      type: string
+    errorType:
+      type: string

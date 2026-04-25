@@ -1,0 +1,48 @@
+name: web-fetch-download
+version: 0.1.0
+type: tool
+runtime: docker
+entrypoint: node dist/index.js
+description: navega a una URL con Playwright, opcionalmente ejecuta login previo con perfil configurado, descarga el archivo objetivo y genera evidencia (screenshot + archivo)
+input_schema:
+  type: object
+  required:
+    - url
+  properties:
+    url:
+      type: string
+    configProfile:
+      type: string
+    configFile:
+      type: string
+    username:
+      type: string
+    password:
+      type: string
+    downloadSelector:
+      type: string
+    waitForDownload:
+      type: boolean
+    headless:
+      type: boolean
+    timeoutMs:
+      type: integer
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    message:
+      type: string
+    filePath:
+      type: string
+    fileName:
+      type: string
+    mimeType:
+      type: string
+    screenshotPath:
+      type: string
+    resultPath:
+      type: string
+    errorType:
+      type: string
