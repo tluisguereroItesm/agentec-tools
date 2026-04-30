@@ -3,12 +3,17 @@ version: 0.1.0
 type: tool
 runtime: docker
 entrypoint: node dist/index.js
-description: navega a una URL con Playwright, opcionalmente ejecuta login previo con perfil configurado, descarga el archivo objetivo y genera evidencia (screenshot + archivo)
+description: ejecuta flujos web multistep con Playwright para descargar documentos y/o extraer datos (por ejemplo ID de YouTube), generando evidencia
 input_schema:
   type: object
   required:
     - url
   properties:
+    action:
+      type: string
+      enum:
+        - download-document
+        - extract-youtube-id
     url:
       type: string
     configProfile:
@@ -23,6 +28,34 @@ input_schema:
       type: string
     waitForDownload:
       type: boolean
+    steps:
+      type: array
+      items:
+        type: object
+        properties:
+          type:
+            type: string
+            enum:
+              - goto
+              - fill
+              - click
+              - waitForSelector
+              - waitForTimeout
+              - downloadClick
+              - extractAttribute
+              - extractText
+          url:
+            type: string
+          selector:
+            type: string
+          value:
+            type: string
+          attribute:
+            type: string
+          key:
+            type: string
+          timeoutMs:
+            type: integer
     headless:
       type: boolean
     timeoutMs:
@@ -40,6 +73,51 @@ output_schema:
       type: string
     mimeType:
       type: string
+    extracted:
+      type: object
+    youtube:
+      type: object
+      properties:
+        videoId:
+          type: string
+        format:
+          type: string
+          enum:
+            - watch
+            - shorts
+            - live
+            - embed
+            - youtu.be
+            - unknown
+        inputFormat:
+          type: string
+          enum:
+            - watch
+            - shorts
+            - live
+            - embed
+            - youtu.be
+            - unknown
+        resolvedFormat:
+          type: string
+          enum:
+            - watch
+            - shorts
+            - live
+            - embed
+            - youtu.be
+            - unknown
+        kind:
+          type: string
+          enum:
+            - video
+            - short
+            - live
+            - unknown
+        canonicalUrl:
+          type: string
+        watchUrl:
+          type: string
     screenshotPath:
       type: string
     resultPath:

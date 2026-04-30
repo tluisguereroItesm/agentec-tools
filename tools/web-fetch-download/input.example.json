@@ -1,4 +1,5 @@
 {
+  "action": "download-document",
   "url": "https://www.w3.org/WAI/WCAG21/wcag21.pdf",
   "downloadSelector": null,
   "waitForDownload": true,
