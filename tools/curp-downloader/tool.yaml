@@ -1,0 +1,66 @@
+name: curp-downloader
+version: 0.1.0
+type: tool
+runtime: docker
+entrypoint: python src/main.py /input.json
+description: >
+  Consulta y descarga el comprobante CURP (PDF) desde gob.mx/curp usando Playwright.
+  Permite entregar el PDF por tres vías: adjunto de correo (delivery=email),
+  subida a OneDrive (delivery=onedrive) o guardado local como artefacto (delivery=artifact).
+input_schema:
+  type: object
+  required:
+    - curp
+  properties:
+    curp:
+      type: string
+      description: "CURP de 18 caracteres a consultar (ej: GARC800101HDFRLB01)"
+    delivery:
+      type: string
+      enum: [artifact, email, onedrive]
+      description: "Forma de entrega del PDF: artifact (default), email o onedrive"
+    to:
+      type: string
+      description: "Correo(s) destino separados por coma. Requerido si delivery=email"
+    subject:
+      type: string
+      description: "Asunto del correo (opcional, default: 'Comprobante CURP: <CURP>')"
+    body:
+      type: string
+      description: "Cuerpo HTML del correo (opcional)"
+    remoteFolder:
+      type: string
+      description: "Carpeta en OneDrive donde subir el PDF (default: 'CURP'). Solo para delivery=onedrive"
+    profile:
+      type: string
+      description: "Perfil Graph a usar (default: AGENTEC_GRAPH_PROFILE)"
+    headless:
+      type: boolean
+      description: "Ejecutar Chromium en modo headless (default: true)"
+    timeoutMs:
+      type: integer
+      description: "Timeout en milisegundos (default: 60000)"
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    message:
+      type: string
+    data:
+      type: object
+      properties:
+        curp:
+          type: string
+        pdfPath:
+          type: string
+        fileName:
+          type: string
+        fileSizeBytes:
+          type: integer
+        delivery:
+          type: object
+    artifactPath:
+      type: string
+    errorType:
+      type: string
