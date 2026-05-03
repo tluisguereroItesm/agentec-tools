@@ -180,17 +180,23 @@ def resolve_graph_settings(capability: str, input_data: dict[str, Any]) -> Graph
     if not client_id:
         raise RuntimeError("CONFIG_ERROR: falta clientId en profile, env o override")
 
-    # Generic scope resolution: "mail" → mailScopes, "powerbi" → powerbiScopes, etc.
-    _SCOPE_MAP: dict[str, tuple[str, str, str]] = {
-        "mail": ("mailScopes", "AGENTEC_GRAPH_MAIL_SCOPES", DEFAULT_MAIL_SCOPES),
-        "files": ("filesScopes", "AGENTEC_GRAPH_FILES_SCOPES", DEFAULT_FILES_SCOPES),
-    }
-    _prof_key, _env_key, _default = _SCOPE_MAP.get(
-        capability,
-        (f"{capability}Scopes", f"AGENTEC_GRAPH_{capability.upper()}_SCOPES", DEFAULT_FILES_SCOPES),
-    )
-    env_scopes = os.environ.get(_env_key, _default)
-    scopes = _normalize_scopes(profile.get(_prof_key), env_scopes)
+    # Si el perfil define combinedScopes, se usan para todas las capabilities.
+    # Esto permite un único login que cubre todas las tools (mail, files, calendar, teams, etc.).
+    # Si no existe, se resuelven los scopes por capability como antes.
+    if profile.get("combinedScopes"):
+        scopes = _normalize_scopes(profile["combinedScopes"], DEFAULT_MAIL_SCOPES)
+    else:
+        # Generic scope resolution: "mail" → mailScopes, "powerbi" → powerbiScopes, etc.
+        _SCOPE_MAP: dict[str, tuple[str, str, str]] = {
+            "mail": ("mailScopes", "AGENTEC_GRAPH_MAIL_SCOPES", DEFAULT_MAIL_SCOPES),
+            "files": ("filesScopes", "AGENTEC_GRAPH_FILES_SCOPES", DEFAULT_FILES_SCOPES),
+        }
+        _prof_key, _env_key, _default = _SCOPE_MAP.get(
+            capability,
+            (f"{capability}Scopes", f"AGENTEC_GRAPH_{capability.upper()}_SCOPES", DEFAULT_FILES_SCOPES),
+        )
+        env_scopes = os.environ.get(_env_key, _default)
+        scopes = _normalize_scopes(profile.get(_prof_key), env_scopes)
 
     token_store_dir = Path(
         os.environ.get("AGENTEC_GRAPH_TOKEN_STORE_DIR", str(Path.home() / ".agentec-graph-tokens"))
