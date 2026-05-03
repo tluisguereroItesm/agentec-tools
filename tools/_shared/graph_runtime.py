@@ -25,15 +25,46 @@ def _load_env_file(env_file: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
+def _discover_stack_config_dir() -> Path | None:
+    explicit = os.environ.get("AGENTEC_STACK_CONFIG_DIR", "").strip()
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        if candidate.exists():
+            return candidate
+
+    env_file = os.environ.get("AGENTEC_STACK_ENV_FILE", "").strip()
+    if env_file:
+        candidate = Path(env_file).expanduser().parent
+        if candidate.exists():
+            return candidate
+
+    cwd = Path.cwd().resolve()
+    candidates: list[Path] = []
+    for parent in (cwd, *cwd.parents):
+        candidates.append(parent / "config")
+        candidates.append(parent / "stack-config")
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+
+    return None
+
+
 def _bootstrap_env() -> None:
     explicit = os.environ.get("AGENTEC_STACK_ENV_FILE", "").strip()
     if explicit:
         _load_env_file(Path(explicit).expanduser())
         return
 
-    stack_cfg = os.environ.get("AGENTEC_STACK_CONFIG_DIR", "").strip()
+    stack_cfg = _discover_stack_config_dir()
     if stack_cfg:
-        _load_env_file(Path(stack_cfg).expanduser() / "stack.env")
+        _load_env_file(stack_cfg / "stack.env")
 
 
 _bootstrap_env()
@@ -80,10 +111,7 @@ def _slug(value: str) -> str:
 
 
 def resolve_stack_config_dir() -> Path | None:
-    raw = os.environ.get("AGENTEC_STACK_CONFIG_DIR", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    return None
+    return _discover_stack_config_dir()
 
 
 def load_profile_document(kind: str, explicit_file: str | None = None) -> dict[str, Any]:
@@ -100,8 +128,8 @@ def load_profile_document(kind: str, explicit_file: str | None = None) -> dict[s
         # Resolve to real path and verify it stays within the expected config dir
         resolved = Path(env_specific).expanduser().resolve()
         stack_dir = resolve_stack_config_dir()
-        allowed_prefix = (stack_dir or Path("/app/stack-config")).resolve()
-        if str(resolved).startswith(str(allowed_prefix)):
+        allowed_prefix = (stack_dir.resolve() if stack_dir else resolved.parent)
+        if resolved == allowed_prefix or allowed_prefix in resolved.parents:
             candidates.append(resolved)
 
     stack_dir = resolve_stack_config_dir()
