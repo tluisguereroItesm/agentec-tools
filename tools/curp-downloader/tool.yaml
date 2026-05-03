@@ -1,20 +1,48 @@
 name: curp-downloader
-version: 0.1.0
+version: 0.2.0
 type: tool
 runtime: docker
 entrypoint: python src/main.py /input.json
 description: >
   Consulta y descarga el comprobante CURP (PDF) desde gob.mx/curp usando Playwright.
-  Permite entregar el PDF por tres vías: adjunto de correo (delivery=email),
-  subida a OneDrive (delivery=onedrive) o guardado local como artefacto (delivery=artifact).
+  Soporta dos modos: por clave CURP (searchMode=curp) o por datos personales (searchMode=datos).
+  Entrega el PDF como artefacto local, adjunto de correo (delivery=email)
+  o subida a OneDrive (delivery=onedrive).
 input_schema:
   type: object
-  required:
-    - curp
   properties:
+    searchMode:
+      type: string
+      enum: [curp, datos]
+      description: "Modo de búsqueda: 'curp' (default) para buscar por clave, 'datos' para buscar por datos personales"
     curp:
       type: string
-      description: "CURP de 18 caracteres a consultar (ej: GARC800101HDFRLB01)"
+      description: "CURP de 18 caracteres. Requerido si searchMode=curp (ej: GARC800101HDFRLB01)"
+    nombre:
+      type: string
+      description: "Nombre(s) de la persona. Requerido si searchMode=datos"
+    primerApellido:
+      type: string
+      description: "Primer apellido (paterno). Requerido si searchMode=datos"
+    segundoApellido:
+      type: string
+      description: "Segundo apellido (materno). Opcional si searchMode=datos"
+    diaNacimiento:
+      type: string
+      description: "Día de nacimiento (01-31). Requerido si searchMode=datos"
+    mesNacimiento:
+      type: string
+      description: "Mes de nacimiento (01-12). Requerido si searchMode=datos"
+    anioNacimiento:
+      type: string
+      description: "Año de nacimiento de 4 dígitos (ej: 1990). Requerido si searchMode=datos"
+    sexo:
+      type: string
+      enum: [H, M, X]
+      description: "Sexo registrado: H=Hombre, M=Mujer, X=No binario. Requerido si searchMode=datos"
+    claveEntidad:
+      type: string
+      description: "Clave de la entidad federativa de nacimiento (ej: DF, MC, JC). Requerido si searchMode=datos. Acepta nombre completo o clave de 2 letras."
     delivery:
       type: string
       enum: [artifact, email, onedrive]
@@ -39,7 +67,7 @@ input_schema:
       description: "Ejecutar Chromium en modo headless (default: true)"
     timeoutMs:
       type: integer
-      description: "Timeout en milisegundos (default: 60000)"
+      description: "Timeout en milisegundos (default: 90000)"
 output_schema:
   type: object
   properties:
