@@ -196,6 +196,25 @@ def _artifacts_dir() -> Path:
     return d
 
 
+def _gateway_path(local_path: Path | str) -> str:
+    """Translate a local artifact path to the gateway-visible path.
+
+    The MCP server writes files to /app/artifacts (its local mount).
+    The OpenClaw gateway mounts the same host directory at
+    AGENTEC_ARTIFACTS_GATEWAY_PATH (e.g. /home/node/.openclaw/workspace/artifacts)
+    so it can serve the files to the browser.
+    If the env var is not set, return the local path unchanged.
+    """
+    gateway_base = os.environ.get("AGENTEC_ARTIFACTS_GATEWAY_PATH", "").rstrip("/")
+    if not gateway_base:
+        return str(local_path)
+    local_base = str(_artifacts_dir()).rstrip("/")
+    s = str(local_path)
+    if s.startswith(local_base + "/") or s == local_base:
+        return gateway_base + s[len(local_base):]
+    return s
+
+
 def _load_input(path_arg: str) -> dict[str, Any]:
     return json.loads(Path(path_arg).read_text(encoding="utf-8-sig"))
 
@@ -582,13 +601,13 @@ def main() -> None:
             delivery_result = upload_to_onedrive(token, filename, pdf_bytes, remote_folder)
 
         else:
-            delivery_result = {"deliveryType": "artifact", "status": "saved", "pdfPath": str(pdf_path)}
+            delivery_result = {"deliveryType": "artifact", "status": "saved", "pdfPath": _gateway_path(pdf_path)}
 
         result = _build_success(
             data={
                 "searchMode": search_mode,
                 "curp": curp_display,
-                "pdfPath": str(pdf_path),
+                "pdfPath": _gateway_path(pdf_path),
                 "fileName": filename,
                 "fileSizeBytes": len(pdf_bytes),
                 "delivery": delivery_result,
