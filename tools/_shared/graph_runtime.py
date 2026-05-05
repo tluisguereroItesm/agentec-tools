@@ -25,15 +25,46 @@ def _load_env_file(env_file: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
+def _discover_stack_config_dir() -> Path | None:
+    explicit = os.environ.get("AGENTEC_STACK_CONFIG_DIR", "").strip()
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        if candidate.exists():
+            return candidate
+
+    env_file = os.environ.get("AGENTEC_STACK_ENV_FILE", "").strip()
+    if env_file:
+        candidate = Path(env_file).expanduser().parent
+        if candidate.exists():
+            return candidate
+
+    cwd = Path.cwd().resolve()
+    candidates: list[Path] = []
+    for parent in (cwd, *cwd.parents):
+        candidates.append(parent / "config")
+        candidates.append(parent / "stack-config")
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+
+    return None
+
+
 def _bootstrap_env() -> None:
     explicit = os.environ.get("AGENTEC_STACK_ENV_FILE", "").strip()
     if explicit:
         _load_env_file(Path(explicit).expanduser())
         return
 
-    stack_cfg = os.environ.get("AGENTEC_STACK_CONFIG_DIR", "").strip()
+    stack_cfg = _discover_stack_config_dir()
     if stack_cfg:
-        _load_env_file(Path(stack_cfg).expanduser() / "stack.env")
+        _load_env_file(stack_cfg / "stack.env")
 
 
 _bootstrap_env()
@@ -80,10 +111,7 @@ def _slug(value: str) -> str:
 
 
 def resolve_stack_config_dir() -> Path | None:
-    raw = os.environ.get("AGENTEC_STACK_CONFIG_DIR", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    return None
+    return _discover_stack_config_dir()
 
 
 def load_profile_document(kind: str, explicit_file: str | None = None) -> dict[str, Any]:
@@ -100,8 +128,8 @@ def load_profile_document(kind: str, explicit_file: str | None = None) -> dict[s
         # Resolve to real path and verify it stays within the expected config dir
         resolved = Path(env_specific).expanduser().resolve()
         stack_dir = resolve_stack_config_dir()
-        allowed_prefix = (stack_dir or Path("/app/stack-config")).resolve()
-        if str(resolved).startswith(str(allowed_prefix)):
+        allowed_prefix = (stack_dir.resolve() if stack_dir else resolved.parent)
+        if resolved == allowed_prefix or allowed_prefix in resolved.parents:
             candidates.append(resolved)
 
     stack_dir = resolve_stack_config_dir()
@@ -152,17 +180,23 @@ def resolve_graph_settings(capability: str, input_data: dict[str, Any]) -> Graph
     if not client_id:
         raise RuntimeError("CONFIG_ERROR: falta clientId en profile, env o override")
 
-    # Generic scope resolution: "mail" → mailScopes, "powerbi" → powerbiScopes, etc.
-    _SCOPE_MAP: dict[str, tuple[str, str, str]] = {
-        "mail": ("mailScopes", "AGENTEC_GRAPH_MAIL_SCOPES", DEFAULT_MAIL_SCOPES),
-        "files": ("filesScopes", "AGENTEC_GRAPH_FILES_SCOPES", DEFAULT_FILES_SCOPES),
-    }
-    _prof_key, _env_key, _default = _SCOPE_MAP.get(
-        capability,
-        (f"{capability}Scopes", f"AGENTEC_GRAPH_{capability.upper()}_SCOPES", DEFAULT_FILES_SCOPES),
-    )
-    env_scopes = os.environ.get(_env_key, _default)
-    scopes = _normalize_scopes(profile.get(_prof_key), env_scopes)
+    # Si el perfil define combinedScopes, se usan para todas las capabilities.
+    # Esto permite un único login que cubre todas las tools (mail, files, calendar, teams, etc.).
+    # Si no existe, se resuelven los scopes por capability como antes.
+    if profile.get("combinedScopes"):
+        scopes = _normalize_scopes(profile["combinedScopes"], DEFAULT_MAIL_SCOPES)
+    else:
+        # Generic scope resolution: "mail" → mailScopes, "powerbi" → powerbiScopes, etc.
+        _SCOPE_MAP: dict[str, tuple[str, str, str]] = {
+            "mail": ("mailScopes", "AGENTEC_GRAPH_MAIL_SCOPES", DEFAULT_MAIL_SCOPES),
+            "files": ("filesScopes", "AGENTEC_GRAPH_FILES_SCOPES", DEFAULT_FILES_SCOPES),
+        }
+        _prof_key, _env_key, _default = _SCOPE_MAP.get(
+            capability,
+            (f"{capability}Scopes", f"AGENTEC_GRAPH_{capability.upper()}_SCOPES", DEFAULT_FILES_SCOPES),
+        )
+        env_scopes = os.environ.get(_env_key, _default)
+        scopes = _normalize_scopes(profile.get(_prof_key), env_scopes)
 
     token_store_dir = Path(
         os.environ.get("AGENTEC_GRAPH_TOKEN_STORE_DIR", str(Path.home() / ".agentec-graph-tokens"))

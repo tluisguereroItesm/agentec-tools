@@ -1,0 +1,94 @@
+name: curp-downloader
+version: 0.2.0
+type: tool
+runtime: docker
+entrypoint: python src/main.py /input.json
+description: >
+  Consulta y descarga el comprobante CURP (PDF) desde gob.mx/curp usando Playwright.
+  Soporta dos modos: por clave CURP (searchMode=curp) o por datos personales (searchMode=datos).
+  Entrega el PDF como artefacto local, adjunto de correo (delivery=email)
+  o subida a OneDrive (delivery=onedrive).
+input_schema:
+  type: object
+  properties:
+    searchMode:
+      type: string
+      enum: [curp, datos]
+      description: "Modo de búsqueda: 'curp' (default) para buscar por clave, 'datos' para buscar por datos personales"
+    curp:
+      type: string
+      description: "CURP de 18 caracteres. Requerido si searchMode=curp (ej: GARC800101HDFRLB01)"
+    nombre:
+      type: string
+      description: "Nombre(s) de la persona. Requerido si searchMode=datos"
+    primerApellido:
+      type: string
+      description: "Primer apellido (paterno). Requerido si searchMode=datos"
+    segundoApellido:
+      type: string
+      description: "Segundo apellido (materno). Opcional si searchMode=datos"
+    diaNacimiento:
+      type: string
+      description: "Día de nacimiento (01-31). Requerido si searchMode=datos"
+    mesNacimiento:
+      type: string
+      description: "Mes de nacimiento (01-12). Requerido si searchMode=datos"
+    anioNacimiento:
+      type: string
+      description: "Año de nacimiento de 4 dígitos (ej: 1990). Requerido si searchMode=datos"
+    sexo:
+      type: string
+      enum: [H, M, X]
+      description: "Sexo registrado: H=Hombre, M=Mujer, X=No binario. Requerido si searchMode=datos"
+    claveEntidad:
+      type: string
+      description: "Clave de la entidad federativa de nacimiento (ej: DF, MC, JC). Requerido si searchMode=datos. Acepta nombre completo o clave de 2 letras."
+    delivery:
+      type: string
+      enum: [artifact, email, onedrive]
+      description: "Forma de entrega del PDF: artifact (default), email o onedrive"
+    to:
+      type: string
+      description: "Correo(s) destino separados por coma. Requerido si delivery=email"
+    subject:
+      type: string
+      description: "Asunto del correo (opcional, default: 'Comprobante CURP: <CURP>')"
+    body:
+      type: string
+      description: "Cuerpo HTML del correo (opcional)"
+    remoteFolder:
+      type: string
+      description: "Carpeta en OneDrive donde subir el PDF (default: 'CURP'). Solo para delivery=onedrive"
+    profile:
+      type: string
+      description: "Perfil Graph a usar (default: AGENTEC_GRAPH_PROFILE)"
+    headless:
+      type: boolean
+      description: "Ejecutar Chromium en modo headless (default: true)"
+    timeoutMs:
+      type: integer
+      description: "Timeout en milisegundos (default: 90000)"
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    message:
+      type: string
+    data:
+      type: object
+      properties:
+        curp:
+          type: string
+        pdfPath:
+          type: string
+        fileName:
+          type: string
+        fileSizeBytes:
+          type: integer
+        delivery:
+          type: object
+    artifactPath:
+      type: string
+    errorType:
+      type: string

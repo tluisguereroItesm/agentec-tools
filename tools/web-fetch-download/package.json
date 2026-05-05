@@ -9,8 +9,8 @@
     "mcp": "node dist/mcp-server.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "playwright": "^1.52.0"
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "playwright": "1.59.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
