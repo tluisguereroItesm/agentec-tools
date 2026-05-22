@@ -102,10 +102,16 @@ def _graph_post(token: str, path: str, body: dict) -> dict:
 
 
 def action_teams(token: str, top: int) -> dict:
-    data = _graph(token, f"/me/joinedTeams?$top={top}&$select=id,displayName,description,visibility")
+    data = _graph(token, "/me/joinedTeams")
+    teams_raw = data.get("value", [])[:top]  # paginar/limitar del lado del cliente
     teams = [
-        {"id": t.get("id", ""), "name": t.get("displayName", ""), "description": (t.get("description") or "")[:100], "visibility": t.get("visibility", "")}
-        for t in data.get("value", [])
+        {
+            "id": t.get("id", ""),
+            "name": t.get("displayName", ""),
+            "description": (t.get("description") or "")[:100],
+            "visibility": t.get("visibility", ""),
+        }
+        for t in teams_raw
     ]
     return {"action": "teams", "count": len(teams), "teams": teams}
 
@@ -113,10 +119,19 @@ def action_teams(token: str, top: int) -> dict:
 def action_channels(token: str, team_id: str, top: int) -> dict:
     if not team_id:
         raise RuntimeError("MISSING_ARG: falta 'teamId' para action=channels")
-    data = _graph(token, f"/teams/{urllib.parse.quote(team_id)}/channels?$top={top}&$select=id,displayName,description,membershipType")
+    data = _graph(
+        token,
+        f"/teams/{urllib.parse.quote(team_id)}/channels"
+        f"?$select=id,displayName,description,membershipType",
+    )
     channels = [
-        {"id": c.get("id", ""), "name": c.get("displayName", ""), "type": c.get("membershipType", ""), "description": (c.get("description") or "")[:100]}
-        for c in data.get("value", [])
+        {
+            "id": c.get("id", ""),
+            "name": c.get("displayName", ""),
+            "type": c.get("membershipType", ""),
+            "description": (c.get("description") or "")[:100],
+        }
+        for c in data.get("value", [])[:top]
     ]
     return {"action": "channels", "teamId": team_id, "count": len(channels), "channels": channels}
 

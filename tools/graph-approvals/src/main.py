@@ -53,6 +53,7 @@ from graph_runtime import (
     init_login,
     poll_login,
     resolve_graph_settings,
+    resolve_session_user,
     write_result_artifact,
 )
 
@@ -175,21 +176,22 @@ def cli() -> None:
         raw = _load_input(input_file)
         action = ACTION_ALIASES.get(str(raw.get("action", "pending")), str(raw.get("action", "pending")))
         settings = resolve_graph_settings("mail", raw)
+        user_id = resolve_session_user(settings, raw.get("user"))
 
         if action == "auth-login":
-            data = init_login(settings, raw.get("user"))
+            data = init_login(settings, user_id)
             result = build_success_result("graph-approvals auth-login iniciado", data, settings)
             result["artifactPath"] = write_result_artifact("graph-approvals", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
         if action == "auth-poll":
-            data = poll_login(settings, raw.get("user"))
+            data = poll_login(settings, user_id)
             result = build_success_result("graph-approvals auth-poll", data, settings)
             result["artifactPath"] = write_result_artifact("graph-approvals", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
 
-        token = get_valid_token(settings, raw.get("user"))
+        token = get_valid_token(settings, user_id)
         top = int(raw.get("top", 20))
 
         if action == "pending":

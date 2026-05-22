@@ -13,6 +13,39 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# ─── Mensajes orientados al agente MCP ────────────────────────────────────────
+# Estos strings forman parte del contrato implícito con el LLM que consume las
+# tools vía MCP. Si los modificas:
+#   1. Mantén el prefijo (AUTH_ERROR:, GRAPH_ERROR:, etc.) porque
+#      error_type_from_message() los usa para routing.
+#   2. No menciones comandos shell ni nombres de scripts: el agente no tiene
+#      shell ni Python disponibles, y si los menciona el mensaje se interpreta
+#      como instrucción literal y el agente se desvía.
+#   3. Si hay una acción remedial, descríbela como una llamada MCP
+#      (action='auth-login', etc.).
+#   4. Revisa que SKILL.md de las tools que usan este runtime sigan coincidiendo.
+
+ERR_NO_SESSION = (
+    "AUTH_ERROR: no existe sesión Graph activa. "
+    "Para autenticar, llama esta misma tool con action='auth-login' "
+    "y sigue las instrucciones que devuelva (URL + código). "
+    "Cuando el usuario confirme, llama con action='auth-poll'."
+)
+
+ERR_TOKEN_REJECTED = (
+    "AUTH_ERROR: token de Graph rechazado por el servidor "
+    "(probablemente expirado). Llama esta tool con action='auth-login' "
+    "para iniciar un nuevo login."
+)
+
+ERR_REFRESH_FAILED = (
+    "AUTH_ERROR: no se pudo renovar el token de Graph: {detail}. "
+    "Llama esta tool con action='auth-login' para iniciar un nuevo login."
+)
+
+# Zona horaria por defecto para operaciones de fecha/hora. Puede ser sobreescrita por env var.
+DEFAULT_TIMEZONE = os.environ.get("AGENTEC_DEFAULT_TIMEZONE", "America/Mexico_City")
+
 
 def _load_env_file(env_file: Path) -> None:
     if not env_file.exists():
@@ -112,6 +145,13 @@ def _slug(value: str) -> str:
 
 def resolve_stack_config_dir() -> Path | None:
     return _discover_stack_config_dir()
+
+
+def resolve_timezone(raw: dict) -> str:
+    """Devuelve la zona horaria para esta invocación.
+    Prioridad: 'timezone' del payload del agente > default global."""
+    tz = raw.get("timezone")
+    return str(tz) if tz else DEFAULT_TIMEZONE
 
 
 def load_profile_document(kind: str, explicit_file: str | None = None) -> dict[str, Any]:
@@ -240,6 +280,54 @@ def pending_path(settings: GraphSettings, user_id: str | None = None) -> Path:
     if user_id:
         return directory / f"user-{_slug(user_id)}.json"
     return directory / "owner.json"
+
+
+def resolve_session_user(settings: GraphSettings, user_id: str | None) -> str | None:
+    """
+    Normaliza el user_id para operaciones de sesión.
+
+    Las tools de Graph aceptan un parámetro `user` opcional que sirve para
+    diferenciar múltiples sesiones bajo el mismo profile+tenant+client. Cuando
+    `user` es None, la sesión se almacena en `owner.json`; cuando es un string,
+    en `user-<slug>.json`.
+
+    Caso single-user (típico hoy):
+        Si el agente pasa un `user_id` pero solo existe la sesión `owner.json`
+        del profile (no hay `user-<x>.json` correspondiente), se trata como
+        None para reutilizar esa sesión. Esto evita que el agente fragmente
+        sesiones por ser inconsistente entre auth-login (sin user) y las
+        operaciones subsecuentes (con user, p.ej. el email del agente).
+
+    Limitación:
+        En un escenario multi-usuario real (varios humanos compartiendo un
+        profile), esta heurística puede colisionar: el primer usuario que
+        haga login sin `user` consume el slot `owner`, y todos los demás
+        verán su `user-<x>` redirigido a esa sesión. Cuando ese caso llegue,
+        hay que sustituir esta función por un contrato explícito de sesión
+        (p.ej. el agente recibe un sessionKey en auth-poll y lo pasa tal cual
+        en llamadas posteriores).
+
+    Args:
+        settings: configuración Graph resuelta.
+        user_id: valor que el agente pasó como `user` en el input (o None).
+
+    Returns:
+        El user_id efectivo a usar para `token_path` / `load_token` / etc.
+        None si conviene resolver al slot `owner`.
+    """
+    if not user_id or not str(user_id).strip():
+        return None
+    user_str = str(user_id).strip()
+    if not token_path(settings, user_str).exists() and token_path(settings, None).exists():
+        # Telemetría: log a stderr para que aparezca en docker logs sin mezclarse
+        # con el stdout JSON que la tool emite como resultado.
+        print(
+            f"[graph_runtime] resolve_session_user: redirigiendo user={user_str!r} "
+            f"a slot owner (profile={settings.profile_name})",
+            file=sys.stderr,
+        )
+        return None
+    return user_str
 
 
 def http_post(url: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -396,7 +484,7 @@ def refresh_token(settings: GraphSettings, token_data: dict[str, Any], user_id: 
         },
     )
     if "access_token" not in response:
-        raise RuntimeError(f"AUTH_ERROR: no se pudo renovar token: {response.get('error_description', response)}")
+        raise RuntimeError(ERR_REFRESH_FAILED.format(detail=response.get("error_description", response)))
     save_token(settings, response, user_id)
     return response
 
@@ -414,9 +502,7 @@ def get_valid_token(settings: GraphSettings, user_id: str | None = None) -> str:
 
     token_data = load_token(settings, user_id)
     if not token_data:
-        raise RuntimeError(
-            "AUTH_ERROR: no existe sesión Graph activa. Ejecuta auth.py login o auth.py init-login para el profile configurado."
-        )
+        raise RuntimeError(ERR_NO_SESSION)
     if is_expired(token_data):
         token_data = refresh_token(settings, token_data, user_id)
     return str(token_data["access_token"])
@@ -497,11 +583,13 @@ def error_type_from_message(message: str) -> str:
     return "ERROR"
 
 
-def graph_get_json(url: str, token: str) -> dict[str, Any]:
+def graph_get_json(url: str, token: str, *, timezone: str | None = None) -> dict[str, Any]:
     request = urllib.request.Request(url)
     request.add_header("Authorization", f"Bearer {token}")
     request.add_header("Accept", "application/json")
     request.add_header("ConsistencyLevel", "eventual")
+    if timezone:
+        request.add_header("Prefer", f'outlook.timezone="{timezone}"')
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.loads(response.read().decode())
@@ -513,7 +601,7 @@ def graph_get_json(url: str, token: str) -> dict[str, Any]:
         code = exc.code
         message = body.get("error", {}).get("message", str(exc))
         if code == 401:
-            raise RuntimeError("AUTH_ERROR: token inválido o expirado")
+            raise RuntimeError(ERR_TOKEN_REJECTED)
         if code == 403:
             raise RuntimeError(f"GRAPH_ERROR: [403] {message}")
         if code == 404:
