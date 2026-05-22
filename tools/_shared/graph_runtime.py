@@ -402,6 +402,16 @@ def refresh_token(settings: GraphSettings, token_data: dict[str, Any], user_id: 
 
 
 def get_valid_token(settings: GraphSettings, user_id: str | None = None) -> str:
+    # SSO token injected via env var (e.g. from Teams OAuth flow) takes priority
+    sso_token = os.environ.get("AGENTEC_GRAPH_SSO_TOKEN", "").strip()
+    if sso_token:
+        return sso_token
+
+    # App-only token via client_credentials (Application permissions + admin consent)
+    app_secret = os.environ.get("AGENTEC_GRAPH_APP_SECRET", "").strip()
+    if app_secret:
+        return get_app_token(settings, app_secret)
+
     token_data = load_token(settings, user_id)
     if not token_data:
         raise RuntimeError(
