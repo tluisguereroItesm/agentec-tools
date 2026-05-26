@@ -97,6 +97,9 @@ def _flow_get(token: str, path: str, environment: str = "~default") -> dict:
             err = json.loads(exc.read()).get("error", {}).get("message", str(exc))
         except Exception:
             err = str(exc)
+        if exc.code == 401:
+            from graph_runtime import ERR_TOKEN_REJECTED
+            raise RuntimeError(ERR_TOKEN_REJECTED) from exc
         raise RuntimeError(f"FLOW_ERROR: [{exc.code}] {err}") from exc
 
 
@@ -194,7 +197,7 @@ def cli() -> None:
     try:
         raw = _load_input(input_file)
         action = ACTION_ALIASES.get(str(raw.get("action", "list")), str(raw.get("action", "list")))
-        settings = resolve_graph_settings("mail", raw)
+        settings = resolve_graph_settings("flows", raw)
         user_id = resolve_session_user(settings, raw.get("user"))
 
         if action == "auth-login":

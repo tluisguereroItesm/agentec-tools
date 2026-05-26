@@ -8,7 +8,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,7 +23,7 @@ from typing import Any
 #      como instrucción literal y el agente se desvía.
 #   3. Si hay una acción remedial, descríbela como una llamada MCP
 #      (action='auth-login', etc.).
-#   4. Revisa que SKILL.md de las tools que usan este runtime sigan coincidiendo.
+#   4. Revisa que SKILL.md de las tools que usen este runtime sigan coincidiendo.
 
 ERR_NO_SESSION = (
     "AUTH_ERROR: no existe sesión Graph activa. "
@@ -43,8 +43,56 @@ ERR_REFRESH_FAILED = (
     "Llama esta tool con action='auth-login' para iniciar un nuevo login."
 )
 
+# Cuando el MRRT exchange falla por consent o permisos faltantes en la app de
+# Azure AD. El admin del tenant debe agregar los permisos del resource y hacer
+# grant admin consent antes de que la tool pueda funcionar.
+#
+# IMPORTANTE: usamos prefijo CONSENT_ERROR (no AUTH_ERROR) para que el agente
+# MCP sepa que NO debe reintentar auth-login. La sesión del usuario está bien;
+# lo que falta es configuración de la app de Azure AD que solo un admin puede
+# resolver. Si esto se reportara como AUTH_ERROR, el SKILL.md mandaría al
+# agente a un nuevo device code login → otro MRRT fallido → loop infinito.
+ERR_RESOURCE_NOT_CONSENTED = (
+    "CONSENT_ERROR: el recurso '{resource}' no está habilitado en la app de Azure AD. "
+    "Detalle del servidor: {detail}. "
+    "El administrador del tenant debe agregar los permisos de este recurso "
+    "en App registrations → API permissions y hacer grant admin consent. "
+    "Un nuevo login del usuario NO resuelve esto — es configuración de la app."
+)
+
 # Zona horaria por defecto para operaciones de fecha/hora. Puede ser sobreescrita por env var.
 DEFAULT_TIMEZONE = os.environ.get("AGENTEC_DEFAULT_TIMEZONE", "America/Mexico_City")
+
+
+# ─── Mapeo capability → resource ─────────────────────────────────────────────
+# Identifica a qué API server apunta cada capability. Las capabilities no
+# listadas aquí asumen Graph (caso común: mail, files, calendar, teams, users,
+# approvals, sharepoint-search).
+#
+# Los strings de resource son los audience URIs que Azure AD/Entra emite en
+# el `aud` claim del JWT. Estos son fósiles arquitectónicos de Microsoft:
+#   - "service.flow.microsoft.com" para Power Automate (no es el endpoint API,
+#     que es api.flow.microsoft.com; aud y endpoint son entidades distintas).
+#   - "analysis.windows.net/powerbi/api" para Power BI (herencia de cuando
+#     Power BI compartía infra con Analysis Services).
+# Estos URIs están documentados en learn.microsoft.com y son estables.
+
+RESOURCE_GRAPH = "https://graph.microsoft.com"
+RESOURCE_FLOW = "https://service.flow.microsoft.com"
+RESOURCE_POWERBI = "https://analysis.windows.net/powerbi/api"
+
+_CAPABILITY_RESOURCE_MAP: dict[str, str] = {
+    "flows": RESOURCE_FLOW,
+    "approvals": RESOURCE_FLOW,  # Power Automate Approvals API: api.flow.microsoft.com/.../approvals
+    "powerbi": RESOURCE_POWERBI,
+    # Resto de capabilities (mail, files, calendar, teams, users,
+    # sharepoint-search) caen a RESOURCE_GRAPH por defecto.
+}
+
+
+def resolve_resource_for_capability(capability: str) -> str:
+    """Devuelve el resource/audience URI al que apuntan los tokens de esta capability."""
+    return _CAPABILITY_RESOURCE_MAP.get(capability, RESOURCE_GRAPH)
 
 
 def _load_env_file(env_file: Path) -> None:
@@ -113,6 +161,11 @@ class GraphSettings:
     scopes: str
     token_store_dir: Path
     allow_tenant_override: bool
+    # Resource/audience al que apuntan los tokens de esta capability.
+    # Se resuelve automáticamente desde capability vía
+    # resolve_resource_for_capability(). Default es Graph para mantener
+    # backward-compat con capabilities preexistentes (mail, files, etc.).
+    resource: str = RESOURCE_GRAPH
     default_drive_mode: str = "me"
     site_hostname: str = ""
     site_path: str = ""
@@ -220,9 +273,22 @@ def resolve_graph_settings(capability: str, input_data: dict[str, Any]) -> Graph
     if not client_id:
         raise RuntimeError("CONFIG_ERROR: falta clientId en profile, env o override")
 
-    # Si el perfil define combinedScopes, se usan para todas las capabilities.
-    # Esto permite un único login que cubre todas las tools (mail, files, calendar, teams, etc.).
-    # Si no existe, se resuelven los scopes por capability como antes.
+    # NOTA importante sobre scopes vs resource:
+    #
+    # Los `scopes` aquí siempre son los del PRIMER login (device code), que
+    # va contra Graph y obtiene el refresh_token. Aunque la capability sea
+    # "flows" o "powerbi", el device code se hace con scopes Graph (los
+    # combinedScopes incluyen offline_access, que es lo crítico).
+    #
+    # Para los recursos secundarios (Flow, Power BI), el access_token se
+    # obtiene vía MRRT en get_valid_token_for_resource(), usando el
+    # refresh_token de Graph. Eso se hace bajo demanda, no aquí.
+    #
+    # Conclusión: NO hace falta poner scopes de Flow/PowerBI en
+    # combinedScopes ni en flowsScopes/powerbiScopes. Los scopes del MRRT
+    # exchange son siempre `https://{resource}/.default` (toma lo que esté
+    # consented en la app), salvo que el caller quiera granularidad fina,
+    # en cuyo caso puede sobreescribir vía resolve_scopes_for_resource().
     if profile.get("combinedScopes"):
         scopes = _normalize_scopes(profile["combinedScopes"], DEFAULT_MAIL_SCOPES)
     else:
@@ -243,6 +309,10 @@ def resolve_graph_settings(capability: str, input_data: dict[str, Any]) -> Graph
     ).expanduser()
     token_store_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resource derivado de capability. mail/files/calendar/teams/etc → Graph.
+    # flows → Flow Service. powerbi → Power BI Service.
+    resource = resolve_resource_for_capability(capability)
+
     return GraphSettings(
         capability=capability,
         profile_name=str(profile_name),
@@ -252,10 +322,32 @@ def resolve_graph_settings(capability: str, input_data: dict[str, Any]) -> Graph
         scopes=scopes,
         token_store_dir=token_store_dir,
         allow_tenant_override=allow_override,
+        resource=resource,
         default_drive_mode=str(profile.get("defaultDriveMode", "me")),
         site_hostname=str(profile.get("siteHostname", "")),
         site_path=str(profile.get("sitePath", "")),
     )
+
+
+def resolve_scopes_for_resource(settings: GraphSettings, resource: str) -> str:
+    """Scopes a usar en un MRRT exchange para `resource`.
+
+    Para Graph (resource principal), usa los scopes ya configurados en
+    settings.scopes (combinedScopes del profile).
+
+    Para recursos secundarios (Flow, Power BI), usa `{resource}/.default`,
+    que pide todos los scopes que estén consented en la app de Azure AD
+    para ese resource. Esto es lo más simple y robusto — no requiere
+    saber qué scope granular tiene cada tool, solo que el admin haya
+    consentido los permisos.
+
+    Si en el futuro alguna tool necesita granularidad (ej. Flow con
+    Flows.Read.All específicamente y no user_impersonation), se puede
+    leer un override del profile aquí.
+    """
+    if resource == RESOURCE_GRAPH:
+        return settings.scopes
+    return f"{resource}/.default"
 
 
 def auth_base_url(settings: GraphSettings) -> str:
@@ -269,9 +361,44 @@ def _session_dir(settings: GraphSettings) -> Path:
 
 
 def token_path(settings: GraphSettings, user_id: str | None = None) -> Path:
+    """Path del cache principal (Graph). Este archivo contiene el refresh_token
+    compartido que sirve para MRRT contra todos los resources secundarios."""
     if user_id:
         return _session_dir(settings) / f"user-{_slug(user_id)}.json"
     return _session_dir(settings) / "owner.json"
+
+
+def _resource_slug(resource: str) -> str:
+    """Slug corto del resource para usar en nombres de archivo de cache.
+    Ej: 'https://service.flow.microsoft.com' → 'service-flow-microsoft-com'."""
+    parsed = urllib.parse.urlparse(resource)
+    netloc = parsed.netloc or resource
+    # Concatena netloc + path para diferenciar (analysis.windows.net/powerbi/api
+    # vs analysis.windows.net/otra-cosa, hipotéticamente).
+    raw = f"{netloc}{parsed.path}".rstrip("/")
+    return _slug(raw)[:48]
+
+
+def token_path_for_resource(
+    settings: GraphSettings,
+    user_id: str | None,
+    resource: str,
+) -> Path:
+    """Path del cache de un resource secundario (Flow, Power BI).
+
+    Para resource == Graph delega a token_path() (cache principal compartido).
+    Para otros resources, sufija el nombre con un slug del resource:
+        owner.service-flow-microsoft-com.json
+        owner.analysis-windows-net-powerbi-api.json
+
+    Esto mantiene el `owner.json` principal como el "anchor" que tiene el
+    refresh_token de Graph, mientras los caches secundarios solo guardan
+    access_tokens que se pueden tirar y regenerar sin perder sesión.
+    """
+    if resource == RESOURCE_GRAPH:
+        return token_path(settings, user_id)
+    base = "owner" if not user_id else f"user-{_slug(user_id)}"
+    return _session_dir(settings) / f"{base}.{_resource_slug(resource)}.json"
 
 
 def pending_path(settings: GraphSettings, user_id: str | None = None) -> Path:
@@ -345,11 +472,41 @@ def http_post(url: str, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def save_token(settings: GraphSettings, token_data: dict[str, Any], user_id: str | None = None) -> None:
+    """Guarda el token del cache principal (Graph). Este archivo es el "anchor"
+    de la sesión: contiene el refresh_token que MRRT reutiliza para otros resources."""
     file_path = token_path(settings, user_id)
     token_data["saved_at"] = int(time.time())
     token_data["profile_name"] = settings.profile_name
     token_data["tenant_id"] = settings.tenant_id
     token_data["client_id"] = settings.client_id
+    token_data["resource"] = RESOURCE_GRAPH
+    if user_id:
+        token_data["user_id"] = user_id
+    file_path.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
+    file_path.chmod(0o600)
+
+
+def save_token_for_resource(
+    settings: GraphSettings,
+    token_data: dict[str, Any],
+    resource: str,
+    user_id: str | None = None,
+) -> None:
+    """Guarda un access_token secundario (Flow, Power BI) en su propio archivo.
+
+    No incluye refresh_token aquí (el refresh_token del response del MRRT
+    exchange es el mismo del owner.json — Entra rota el refresh_token y la
+    propagación al cache principal se hace en refresh_token_for_resource).
+    """
+    if resource == RESOURCE_GRAPH:
+        save_token(settings, token_data, user_id)
+        return
+    file_path = token_path_for_resource(settings, user_id, resource)
+    token_data["saved_at"] = int(time.time())
+    token_data["profile_name"] = settings.profile_name
+    token_data["tenant_id"] = settings.tenant_id
+    token_data["client_id"] = settings.client_id
+    token_data["resource"] = resource
     if user_id:
         token_data["user_id"] = user_id
     file_path.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
@@ -363,6 +520,20 @@ def load_token(settings: GraphSettings, user_id: str | None = None) -> dict[str,
     return json.loads(file_path.read_text(encoding="utf-8"))
 
 
+def load_token_for_resource(
+    settings: GraphSettings,
+    resource: str,
+    user_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Carga el cache secundario de un resource específico (o el principal si resource==Graph)."""
+    if resource == RESOURCE_GRAPH:
+        return load_token(settings, user_id)
+    file_path = token_path_for_resource(settings, user_id, resource)
+    if not file_path.exists():
+        return None
+    return json.loads(file_path.read_text(encoding="utf-8"))
+
+
 def is_expired(token_data: dict[str, Any]) -> bool:
     saved_at = int(token_data.get("saved_at", 0))
     expires_in = int(token_data.get("expires_in", 3600))
@@ -370,6 +541,19 @@ def is_expired(token_data: dict[str, Any]) -> bool:
 
 
 def init_login(settings: GraphSettings, user_id: str | None = None) -> dict[str, Any]:
+    """Inicia el device code flow.
+
+    Nota: el device code SIEMPRE pide scopes de Graph (los del profile o
+    combinedScopes), aunque la capability sea flows o powerbi. La razón es
+    que Azure AD/Entra v2.0 endpoint NO permite scopes de múltiples
+    resources en una sola request (devuelve AADSTS28000). Por eso el
+    diseño es: device code → Graph + offline_access, luego MRRT exchange
+    contra Flow/PowerBI usando el refresh_token resultante.
+
+    Para que el MRRT exchange funcione sin pedirle consent extra al
+    usuario, los permisos del resource secundario deben estar pre-consented
+    en la app de Azure AD (admin consent del tenant).
+    """
     response = http_post(
         f"{auth_base_url(settings)}/devicecode",
         {"client_id": settings.client_id, "scope": settings.scopes},
@@ -474,6 +658,11 @@ def device_code_login(settings: GraphSettings, user_id: str | None = None) -> di
 
 
 def refresh_token(settings: GraphSettings, token_data: dict[str, Any], user_id: str | None = None) -> dict[str, Any]:
+    """Renueva el access_token de Graph usando el refresh_token cacheado.
+
+    Para renovar tokens de resources secundarios (Flow, Power BI) usa
+    refresh_token_for_resource() en su lugar.
+    """
     response = http_post(
         f"{auth_base_url(settings)}/token",
         {
@@ -489,28 +678,168 @@ def refresh_token(settings: GraphSettings, token_data: dict[str, Any], user_id: 
     return response
 
 
-def get_valid_token(settings: GraphSettings, user_id: str | None = None) -> str:
-    # SSO token injected via env var (e.g. from Teams OAuth flow) takes priority
-    sso_token = os.environ.get("AGENTEC_GRAPH_SSO_TOKEN", "").strip()
-    if sso_token:
-        return sso_token
+def refresh_token_for_resource(
+    settings: GraphSettings,
+    resource: str,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """MRRT exchange: usa el refresh_token del cache principal (Graph) para
+    obtener un access_token nuevo apuntando a `resource`.
 
-    # App-only token via client_credentials (Application permissions + admin consent)
-    app_secret = os.environ.get("AGENTEC_GRAPH_APP_SECRET", "").strip()
-    if app_secret:
-        return get_app_token(settings, app_secret)
+    Esta es la pieza clave del soporte multi-audience. El refresh_token de
+    Entra ID es agnóstico de audience; solo el access_token lleva el `aud`.
+    Cambiando el scope en el grant `refresh_token` se obtiene un access_token
+    para el resource pedido — siempre y cuando los permisos estén consented
+    en la app de Azure AD.
 
-    token_data = load_token(settings, user_id)
-    if not token_data:
+    Errores que esperamos manejar:
+    - AADSTS65001: el usuario no consintió los permisos del resource.
+    - AADSTS50105: la app no tiene los permisos asignados.
+    - AADSTS70011: scope inválido (el resource no existe o está mal escrito).
+    - invalid_grant: refresh_token expirado o revocado.
+
+    Cuando alguno de los anteriores ocurre, devolvemos ERR_RESOURCE_NOT_CONSENTED
+    para que el agente sepa que el problema es del lado de Azure AD, no del
+    runtime. El usuario no necesita un nuevo login — el admin necesita hacer
+    grant admin consent en el portal.
+    """
+    if resource == RESOURCE_GRAPH:
+        # Para Graph, la función dedicada es refresh_token() (sin _for_resource).
+        # Esto no debería pasar en flujo normal, pero lo soportamos.
+        primary = load_token(settings, user_id)
+        if not primary:
+            raise RuntimeError(ERR_NO_SESSION)
+        return refresh_token(settings, primary, user_id)
+
+    primary = load_token(settings, user_id)
+    if not primary or not primary.get("refresh_token"):
         raise RuntimeError(ERR_NO_SESSION)
-    if is_expired(token_data):
-        token_data = refresh_token(settings, token_data, user_id)
-    return str(token_data["access_token"])
+
+    scopes = resolve_scopes_for_resource(settings, resource)
+    response = http_post(
+        f"{auth_base_url(settings)}/token",
+        {
+            "grant_type": "refresh_token",
+            "client_id": settings.client_id,
+            "refresh_token": primary["refresh_token"],
+            "scope": scopes,
+        },
+    )
+
+    if "access_token" not in response:
+        error_code = response.get("error", "")
+        detail = response.get("error_description", json.dumps(response, ensure_ascii=False))
+        consent_markers = [
+            "AADSTS65001",  # User/admin not consented
+            "AADSTS50105",  # App has no role/permission assigned
+            "AADSTS70011",  # Invalid scope
+            "AADSTS65002",  # Consent between admin and user mismatched
+            "consent_required",
+            "interaction_required",
+            "invalid_scope",
+        ]
+        if any(marker in detail for marker in consent_markers):
+            raise RuntimeError(
+                ERR_RESOURCE_NOT_CONSENTED.format(resource=resource, detail=detail)
+            )
+        # Otros errores (invalid_grant, etc.): el refresh_token mismo está mal.
+        # El usuario sí necesita re-login en este caso.
+        raise RuntimeError(ERR_REFRESH_FAILED.format(detail=detail))
+
+    # Entra rota los refresh_tokens: cada exchange devuelve uno nuevo. Si lo
+    # ignoramos, eventualmente el viejo expira y todo se cae. Lo propagamos
+    # al cache principal para que la próxima vez se use el más reciente.
+    new_refresh = response.get("refresh_token")
+    if new_refresh and new_refresh != primary.get("refresh_token"):
+        primary["refresh_token"] = new_refresh
+        # Mantener saved_at del primary intacto: el access_token de Graph que
+        # tenga ahí no cambia, solo el refresh_token sí. Actualizamos en disco.
+        token_path(settings, user_id).write_text(
+            json.dumps(primary, indent=2), encoding="utf-8"
+        )
+
+    save_token_for_resource(settings, response, resource, user_id)
+    return response
+
+
+def get_valid_token(settings: GraphSettings, user_id: str | None = None) -> str:
+    """Devuelve un access_token válido para el resource asociado a la capability.
+
+    Esta es la API pública que las tools llaman. El resource se resuelve
+    automáticamente desde settings.resource (que a su vez se deriva de
+    capability vía resolve_resource_for_capability):
+
+      capability="mail"    → resource=Graph        → token Graph
+      capability="files"   → resource=Graph        → token Graph
+      capability="flows"   → resource=Flow Service → token Flow (vía MRRT)
+      capability="powerbi" → resource=Power BI     → token Power BI (vía MRRT)
+
+    Las tools no necesitan saber cuál es su resource — solo llaman
+    get_valid_token(settings, user_id) y reciben el token correcto.
+
+    Para casos avanzados donde una sola tool necesite tokens de múltiples
+    resources (raro pero posible), usar get_valid_token_for_resource()
+    directamente.
+    """
+    return get_valid_token_for_resource(settings, settings.resource, user_id)
+
+
+def get_valid_token_for_resource(
+    settings: GraphSettings,
+    resource: str,
+    user_id: str | None = None,
+) -> str:
+    """Devuelve un access_token válido para `resource` específicamente.
+
+    Lógica:
+    1. Para Graph: respeta SSO injected y app_secret (escenarios especiales),
+       luego cache principal con refresh si está expirado.
+    2. Para resources secundarios: cache propio si está vigente; si no,
+       MRRT exchange usando el refresh_token del cache principal.
+    """
+    if resource == RESOURCE_GRAPH:
+        # SSO token injected via env var (e.g. from Teams OAuth flow) takes priority.
+        # Aplica solo a Graph — los tokens SSO de Teams no son válidos para Flow/PowerBI.
+        sso_token = os.environ.get("AGENTEC_GRAPH_SSO_TOKEN", "").strip()
+        if sso_token:
+            return sso_token
+
+        # App-only token via client_credentials (Application permissions + admin consent).
+        # Similar: aplica a Graph en este runtime. Para Flow/PowerBI con service
+        # principal, habría que hacer una función dedicada con sus particularidades
+        # (Power BI requiere habilitar service principals en el admin portal del producto).
+        app_secret = os.environ.get("AGENTEC_GRAPH_APP_SECRET", "").strip()
+        if app_secret:
+            return get_app_token(settings, app_secret)
+
+        token_data = load_token(settings, user_id)
+        if not token_data:
+            raise RuntimeError(ERR_NO_SESSION)
+        if is_expired(token_data):
+            token_data = refresh_token(settings, token_data, user_id)
+        return str(token_data["access_token"])
+
+    # Resource secundario (Flow, Power BI, etc.)
+    cached = load_token_for_resource(settings, resource, user_id)
+    if cached and not is_expired(cached):
+        return str(cached["access_token"])
+
+    # Cache vacío o expirado → MRRT exchange.
+    response = refresh_token_for_resource(settings, resource, user_id)
+    return str(response["access_token"])
 
 
 def logout(settings: GraphSettings, user_id: str | None = None) -> None:
+    """Cierra sesión: borra el cache principal Y todos los caches secundarios
+    de resources (Flow, Power BI). El refresh_token muere con el primary."""
     token_path(settings, user_id).unlink(missing_ok=True)
     pending_path(settings, user_id).unlink(missing_ok=True)
+    # Borrar caches secundarios. El pattern es owner.{slug}.json o
+    # user-{user}.{slug}.json. Borramos todo lo que coincida con el prefijo.
+    session_dir = _session_dir(settings)
+    base = "owner" if not user_id else f"user-{_slug(user_id)}"
+    for secondary in session_dir.glob(f"{base}.*.json"):
+        secondary.unlink(missing_ok=True)
 
 
 def list_tokens(settings: GraphSettings) -> list[dict[str, Any]]:
@@ -525,6 +854,7 @@ def list_tokens(settings: GraphSettings) -> list[dict[str, Any]]:
                 "hasRefresh": bool(token_data.get("refresh_token")),
                 "profile": token_data.get("profile_name", settings.profile_name),
                 "tenantId": token_data.get("tenant_id", settings.tenant_id),
+                "resource": token_data.get("resource", RESOURCE_GRAPH),
             }
         )
     return records
@@ -572,7 +902,10 @@ def build_error_result(message: str, error_type: str, settings: GraphSettings | 
 def error_type_from_message(message: str) -> str:
     for prefix in [
         "AUTH_ERROR",
+        "CONSENT_ERROR",
         "GRAPH_ERROR",
+        "FLOW_ERROR",
+        "POWERBI_ERROR",
         "RATE_LIMIT",
         "MISSING_ARG",
         "CONFIG_ERROR",
@@ -653,6 +986,7 @@ def run_auth_cli(capability: str) -> None:
             "profile": settings.profile_name,
             "tenantId": settings.tenant_id,
             "tokenPath": str(token_path(settings, args.user)),
+            "resource": settings.resource,
         }
     elif args.command == "refresh":
         token_data = load_token(settings, args.user)
