@@ -119,6 +119,9 @@ def _flow_post(token: str, path: str, body: dict, environment: str = "~default")
             err = json.loads(exc.read()).get("error", {}).get("message", str(exc))
         except Exception:
             err = str(exc)
+        if exc.code == 401:
+            from graph_runtime import ERR_TOKEN_REJECTED
+            raise RuntimeError(ERR_TOKEN_REJECTED) from exc
         raise RuntimeError(f"FLOW_ERROR: [{exc.code}] {err}") from exc
 
 
