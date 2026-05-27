@@ -905,7 +905,11 @@ def error_type_from_message(message: str) -> str:
         "CONSENT_ERROR",
         "GRAPH_ERROR",
         "FLOW_ERROR",
-        "POWERBI_ERROR",
+        # graph-powerbi emite "PBI_ERROR"; graph-approvals emite
+        # "APPROVALS_ERROR". Deben coincidir literalmente con el prefijo del
+        # mensaje que lanza cada tool, no con el nombre del producto.
+        "PBI_ERROR",
+        "APPROVALS_ERROR",
         "RATE_LIMIT",
         "MISSING_ARG",
         "CONFIG_ERROR",
