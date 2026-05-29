@@ -13,6 +13,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# secret_storage vive en el mismo _shared/ que este módulo. El bootstrap del
+# sys.path que hacen las tools al importar este archivo ya incluye _shared/,
+# así que el import simple funciona. Si lo mueves a otro path, ajusta aquí.
+from secret_storage import (
+    load_token_file,
+    redact_secrets,
+    save_token_file,
+)
+
 # ─── Mensajes orientados al agente MCP ────────────────────────────────────────
 # Estos strings forman parte del contrato implícito con el LLM que consume las
 # tools vía MCP. Si los modificas:
@@ -473,7 +482,14 @@ def http_post(url: str, data: dict[str, Any]) -> dict[str, Any]:
 
 def save_token(settings: GraphSettings, token_data: dict[str, Any], user_id: str | None = None) -> None:
     """Guarda el token del cache principal (Graph). Este archivo es el "anchor"
-    de la sesión: contiene el refresh_token que MRRT reutiliza para otros resources."""
+    de la sesión: contiene el refresh_token que MRRT reutiliza para otros resources.
+
+    Encriptación at-rest: save_token_file cifra los campos sensibles
+    (access_token, refresh_token, id_token) con Fernet si la env var
+    AGENTEC_TOKEN_ENCRYPTION_KEY está configurada. Si no, cae a plaintext con
+    warning a stderr (backward-compat). Setear AGENTEC_REQUIRE_ENCRYPTION=1
+    para forzar fail-closed (recomendado en producción).
+    """
     file_path = token_path(settings, user_id)
     token_data["saved_at"] = int(time.time())
     token_data["profile_name"] = settings.profile_name
@@ -482,8 +498,7 @@ def save_token(settings: GraphSettings, token_data: dict[str, Any], user_id: str
     token_data["resource"] = RESOURCE_GRAPH
     if user_id:
         token_data["user_id"] = user_id
-    file_path.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
-    file_path.chmod(0o600)
+    save_token_file(file_path, token_data)
 
 
 def save_token_for_resource(
@@ -509,15 +524,13 @@ def save_token_for_resource(
     token_data["resource"] = resource
     if user_id:
         token_data["user_id"] = user_id
-    file_path.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
-    file_path.chmod(0o600)
+    save_token_file(file_path, token_data)
 
 
 def load_token(settings: GraphSettings, user_id: str | None = None) -> dict[str, Any] | None:
+    """load_token_file maneja tanto archivos cifrados como plaintext legacy."""
     file_path = token_path(settings, user_id)
-    if not file_path.exists():
-        return None
-    return json.loads(file_path.read_text(encoding="utf-8"))
+    return load_token_file(file_path)
 
 
 def load_token_for_resource(
@@ -529,9 +542,7 @@ def load_token_for_resource(
     if resource == RESOURCE_GRAPH:
         return load_token(settings, user_id)
     file_path = token_path_for_resource(settings, user_id, resource)
-    if not file_path.exists():
-        return None
-    return json.loads(file_path.read_text(encoding="utf-8"))
+    return load_token_file(file_path)
 
 
 def is_expired(token_data: dict[str, Any]) -> bool:
@@ -673,7 +684,11 @@ def refresh_token(settings: GraphSettings, token_data: dict[str, Any], user_id: 
         },
     )
     if "access_token" not in response:
-        raise RuntimeError(ERR_REFRESH_FAILED.format(detail=response.get("error_description", response)))
+        # No incluir el response completo en el detail — solo el campo
+        # error_description o, en su defecto, el error code. El response
+        # podría tener campos no esperados con material sensible.
+        detail = response.get("error_description") or response.get("error", "unknown")
+        raise RuntimeError(ERR_REFRESH_FAILED.format(detail=detail))
     save_token(settings, response, user_id)
     return response
 
@@ -728,7 +743,10 @@ def refresh_token_for_resource(
 
     if "access_token" not in response:
         error_code = response.get("error", "")
-        detail = response.get("error_description", json.dumps(response, ensure_ascii=False))
+        # No incluir el response completo en el detail — el response podría
+        # tener campos no esperados con material sensible. Solo el campo
+        # error_description o, en su defecto, el código de error.
+        detail = response.get("error_description") or f"error={error_code or 'unknown'}"
         consent_markers = [
             "AADSTS65001",  # User/admin not consented
             "AADSTS50105",  # App has no role/permission assigned
@@ -753,10 +771,9 @@ def refresh_token_for_resource(
     if new_refresh and new_refresh != primary.get("refresh_token"):
         primary["refresh_token"] = new_refresh
         # Mantener saved_at del primary intacto: el access_token de Graph que
-        # tenga ahí no cambia, solo el refresh_token sí. Actualizamos en disco.
-        token_path(settings, user_id).write_text(
-            json.dumps(primary, indent=2), encoding="utf-8"
-        )
+        # tenga ahí no cambia, solo el refresh_token sí. Actualizamos en disco
+        # vía save_token_file para preservar el cifrado at-rest.
+        save_token_file(token_path(settings, user_id), primary)
 
     save_token_for_resource(settings, response, resource, user_id)
     return response
@@ -846,7 +863,24 @@ def list_tokens(settings: GraphSettings) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     session_dir = _session_dir(settings)
     for candidate in sorted(session_dir.glob("*.json")):
-        token_data = json.loads(candidate.read_text(encoding="utf-8"))
+        # Usar load_token_file para que funcione tanto con archivos cifrados
+        # como plaintext. Si la clave falla o el archivo es de otra clave,
+        # lo listamos como inaccesible en lugar de tirar toda la operación.
+        try:
+            token_data = load_token_file(candidate)
+            if token_data is None:
+                continue
+        except Exception as exc:
+            records.append({
+                "file": str(candidate),
+                "expired": True,
+                "hasRefresh": False,
+                "profile": settings.profile_name,
+                "tenantId": settings.tenant_id,
+                "resource": "unknown",
+                "error": f"no se pudo leer: {exc}",
+            })
+            continue
         records.append(
             {
                 "file": str(candidate),
@@ -867,9 +901,18 @@ def ensure_artifacts_dir() -> Path:
 
 
 def write_result_artifact(tool_name: str, action: str, payload: dict[str, Any]) -> str:
+    """Escribe un artifact JSON con el resultado de una llamada a tool.
+
+    Defensa en profundidad: aunque los token files están cifrados en disco,
+    los artifacts podrían capturar accidentalmente un token si un payload
+    incluye un response del IdP en un error path. redact_secrets reemplaza
+    access_token/refresh_token/id_token/etc. por [REDACTED] antes de
+    serializar, sin mutar el payload original que sigue su flujo normal.
+    """
     artifacts = ensure_artifacts_dir()
     artifact_path = artifacts / f"{tool_name}-{action}-{int(time.time())}.json"
-    artifact_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    sanitized = redact_secrets(payload)
+    artifact_path.write_text(json.dumps(sanitized, indent=2, ensure_ascii=False), encoding="utf-8")
     return str(artifact_path)
 
 
