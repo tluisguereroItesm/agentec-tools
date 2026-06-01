@@ -52,6 +52,7 @@ from graph_runtime import (
     init_login,
     poll_login,
     resolve_graph_settings,
+    resolve_session_user,
     write_result_artifact,
 )
 
@@ -256,21 +257,22 @@ def cli() -> None:
         if not action:
             raise RuntimeError("MISSING_ARG: falta 'action'")
         settings = resolve_graph_settings("files", raw)
+        user_id = resolve_session_user(settings, raw.get("user"))
 
         if action == "auth-login":
-            data = init_login(settings, raw.get("user"))
+            data = init_login(settings, user_id)
             result = build_success_result("graph-files-write auth-login iniciado", data, settings)
             result["artifactPath"] = write_result_artifact("graph-files-write", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
         if action == "auth-poll":
-            data = poll_login(settings, raw.get("user"))
+            data = poll_login(settings, user_id)
             result = build_success_result("graph-files-write auth-poll", data, settings)
             result["artifactPath"] = write_result_artifact("graph-files-write", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
 
-        token = get_valid_token(settings, raw.get("user"))
+        token = get_valid_token(settings, user_id)
         drive_path = _me_drive(str(raw.get("graphUserId", "")) or None)
 
         if action == "upload":

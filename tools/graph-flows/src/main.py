@@ -52,6 +52,7 @@ from graph_runtime import (
     init_login,
     poll_login,
     resolve_graph_settings,
+    resolve_session_user,
     write_result_artifact,
 )
 
@@ -96,6 +97,9 @@ def _flow_get(token: str, path: str, environment: str = "~default") -> dict:
             err = json.loads(exc.read()).get("error", {}).get("message", str(exc))
         except Exception:
             err = str(exc)
+        if exc.code == 401:
+            from graph_runtime import ERR_TOKEN_REJECTED
+            raise RuntimeError(ERR_TOKEN_REJECTED) from exc
         raise RuntimeError(f"FLOW_ERROR: [{exc.code}] {err}") from exc
 
 
@@ -115,6 +119,9 @@ def _flow_post(token: str, path: str, body: dict, environment: str = "~default")
             err = json.loads(exc.read()).get("error", {}).get("message", str(exc))
         except Exception:
             err = str(exc)
+        if exc.code == 401:
+            from graph_runtime import ERR_TOKEN_REJECTED
+            raise RuntimeError(ERR_TOKEN_REJECTED) from exc
         raise RuntimeError(f"FLOW_ERROR: [{exc.code}] {err}") from exc
 
 
@@ -193,22 +200,23 @@ def cli() -> None:
     try:
         raw = _load_input(input_file)
         action = ACTION_ALIASES.get(str(raw.get("action", "list")), str(raw.get("action", "list")))
-        settings = resolve_graph_settings("mail", raw)
+        settings = resolve_graph_settings("flows", raw)
+        user_id = resolve_session_user(settings, raw.get("user"))
 
         if action == "auth-login":
-            data = init_login(settings, raw.get("user"))
+            data = init_login(settings, user_id)
             result = build_success_result("graph-flows auth-login iniciado", data, settings)
             result["artifactPath"] = write_result_artifact("graph-flows", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
         if action == "auth-poll":
-            data = poll_login(settings, raw.get("user"))
+            data = poll_login(settings, user_id)
             result = build_success_result("graph-flows auth-poll", data, settings)
             result["artifactPath"] = write_result_artifact("graph-flows", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
 
-        token = get_valid_token(settings, raw.get("user"))
+        token = get_valid_token(settings, user_id)
         environment = str(raw.get("environment", "~default"))
         flow_id = str(raw.get("flowId", ""))
         top = int(raw.get("top", 20))

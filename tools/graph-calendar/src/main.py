@@ -8,6 +8,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
 def _bootstrap_shared_path() -> None:
     candidates: list[Path] = []
 
@@ -45,6 +46,7 @@ def _bootstrap_shared_path() -> None:
 
 _bootstrap_shared_path()
 from graph_runtime import (
+    DEFAULT_TIMEZONE,
     build_error_result,
     build_success_result,
     error_type_from_message,
@@ -53,6 +55,8 @@ from graph_runtime import (
     init_login,
     poll_login,
     resolve_graph_settings,
+    resolve_session_user,
+    resolve_timezone,
     write_result_artifact,
 )
 
@@ -88,8 +92,8 @@ def _load_input(path_arg: str) -> dict:
     return json.loads(Path(path_arg).read_text(encoding="utf-8"))
 
 
-def _graph(token: str, path: str) -> dict:
-    return graph_get_json(f"{BASE_URL}{path}", token)
+def _graph(token: str, path: str, *, timezone: str | None = None) -> dict:
+    return graph_get_json(f"{BASE_URL}{path}", token, timezone=timezone)
 
 
 def _user_path(graph_user_id: str | None) -> str:
@@ -189,7 +193,7 @@ def action_today(token: str, user_path: str, top: int) -> dict:
         f"&$top={top}&$orderby=start/dateTime"
         f"&$select=id,subject,start,end,location,organizer,attendees,isOnlineMeeting,onlineMeeting,bodyPreview,webLink,recurrence,sensitivity"
     )
-    data = _graph(token, url)
+    data = _graph(token, url, timezone=DEFAULT_TIMEZONE)
     events = [_fmt_event(e) for e in data.get("value", [])]
     return {"action": "today", "count": len(events), "events": events}
 
@@ -201,7 +205,7 @@ def action_week(token: str, user_path: str, top: int) -> dict:
         f"&$top={top}&$orderby=start/dateTime"
         f"&$select=id,subject,start,end,location,organizer,attendees,isOnlineMeeting,onlineMeeting,bodyPreview,webLink,recurrence,sensitivity"
     )
-    data = _graph(token, url)
+    data = _graph(token, url, timezone=DEFAULT_TIMEZONE)
     events = [_fmt_event(e) for e in data.get("value", [])]
     return {"action": "week", "count": len(events), "events": events}
 
@@ -213,7 +217,7 @@ def action_month(token: str, user_path: str, top: int) -> dict:
         f"&$top={min(top, 100)}&$orderby=start/dateTime"
         f"&$select=id,subject,start,end,location,organizer,attendees,isOnlineMeeting,onlineMeeting,bodyPreview,webLink,recurrence,sensitivity"
     )
-    data = _graph(token, url)
+    data = _graph(token, url, timezone=DEFAULT_TIMEZONE)
     events = [_fmt_event(e) for e in data.get("value", [])]
     return {"action": "month", "count": len(events), "events": events}
 
@@ -221,7 +225,7 @@ def action_month(token: str, user_path: str, top: int) -> dict:
 def action_read(token: str, user_path: str, event_id: str) -> dict:
     if not event_id:
         raise RuntimeError("MISSING_ARG: falta 'id' para action=read")
-    data = _graph(token, f"{user_path}/events/{urllib.parse.quote(event_id)}")
+    data = _graph(token, f"{user_path}/events/{urllib.parse.quote(event_id)}", timezone=DEFAULT_TIMEZONE)
     return {"action": "read", "event": _fmt_event(data)}
 
 
@@ -233,7 +237,7 @@ def action_create(token: str, user_path: str, raw: dict) -> dict:
     end_dt = str(raw.get("end", ""))
     if not start_dt or not end_dt:
         raise RuntimeError("MISSING_ARG: falta 'start' y/o 'end' para action=create (formato ISO 8601)")
-    tz = str(raw.get("timezone", "America/Monterrey"))
+    tz = resolve_timezone(raw)
     body: dict = {
         "subject": subject,
         "start": {"dateTime": start_dt, "timeZone": tz},
@@ -262,7 +266,7 @@ def action_update(token: str, user_path: str, event_id: str, raw: dict) -> dict:
     if raw.get("subject"):
         patch["subject"] = str(raw["subject"])
     if raw.get("start") and raw.get("end"):
-        tz = str(raw.get("timezone", "America/Monterrey"))
+        tz = resolve_timezone(raw)
         patch["start"] = {"dateTime": str(raw["start"]), "timeZone": tz}
         patch["end"] = {"dateTime": str(raw["end"]), "timeZone": tz}
     if raw.get("location"):
@@ -290,7 +294,7 @@ def action_availability(token: str, user_path: str, raw: dict) -> dict:
         f"&$top=50&$orderby=start/dateTime"
         f"&$select=subject,start,end"
     )
-    data = _graph(token, url)
+    data = _graph(token, url, timezone=DEFAULT_TIMEZONE)
     busy = [(e["start"]["dateTime"], e["end"]["dateTime"]) for e in data.get("value", [])]
     return {
         "action": "availability",
@@ -312,21 +316,22 @@ def cli() -> None:
         raw = _load_input(input_file)
         action = ACTION_ALIASES.get(str(raw.get("action", "today")), str(raw.get("action", "today")))
         settings = resolve_graph_settings("calendar", raw)
+        user_id = resolve_session_user(settings, raw.get("user"))
 
         if action == "auth-login":
-            data = init_login(settings, raw.get("user"))
+            data = init_login(settings, user_id)
             result = build_success_result("graph-calendar auth-login iniciado", data, settings)
             result["artifactPath"] = write_result_artifact("graph-calendar", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
         if action == "auth-poll":
-            data = poll_login(settings, raw.get("user"))
+            data = poll_login(settings, user_id)
             result = build_success_result("graph-calendar auth-poll", data, settings)
             result["artifactPath"] = write_result_artifact("graph-calendar", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
 
-        token = get_valid_token(settings, raw.get("user"))
+        token = get_valid_token(settings, user_id)
         user_path = _user_path(str(raw.get("graphUserId", "")))
         top = int(raw.get("top", 20))
 
