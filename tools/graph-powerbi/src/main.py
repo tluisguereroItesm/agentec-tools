@@ -44,6 +44,7 @@ def _bootstrap_shared_path() -> None:
 
 _bootstrap_shared_path()
 from graph_runtime import (
+    ERR_TOKEN_REJECTED,
     build_error_result,
     build_success_result,
     error_type_from_message,
@@ -51,6 +52,7 @@ from graph_runtime import (
     init_login,
     poll_login,
     resolve_graph_settings,
+    resolve_session_user,
     write_result_artifact,
 )
 
@@ -114,7 +116,7 @@ def _pbi_get(token: str, path: str) -> dict:
             code_str = ""
         http_code = exc.code
         if http_code == 401:
-            raise RuntimeError("AUTH_ERROR: token de Power BI inválido o expirado")
+            raise RuntimeError(ERR_TOKEN_REJECTED)
         if http_code == 403:
             raise RuntimeError(f"PBI_ERROR: [403] Sin permisos — {msg}")
         if http_code == 404:
@@ -140,7 +142,7 @@ def _pbi_post(token: str, path: str, body: dict) -> dict:
         except Exception:
             msg = str(exc)
         if exc.code == 401:
-            raise RuntimeError("AUTH_ERROR: token de Power BI inválido o expirado")
+            raise RuntimeError(ERR_TOKEN_REJECTED)
         raise RuntimeError(f"PBI_ERROR: [{exc.code}] {msg}") from exc
 
 
@@ -386,21 +388,22 @@ def cli() -> None:
         raw = _load_input(input_file)
         action = ACTION_ALIASES.get(str(raw.get("action", "workspaces")), str(raw.get("action", "workspaces")))
         settings = resolve_graph_settings("powerbi", raw)
+        user_id = resolve_session_user(settings, raw.get("user"))
 
         if action == "auth-login":
-            data = init_login(settings, raw.get("user"))
+            data = init_login(settings, user_id)
             result = build_success_result("graph-powerbi auth-login iniciado", data, settings)
             result["artifactPath"] = write_result_artifact("graph-powerbi", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
         if action == "auth-poll":
-            data = poll_login(settings, raw.get("user"))
+            data = poll_login(settings, user_id)
             result = build_success_result("graph-powerbi auth-poll", data, settings)
             result["artifactPath"] = write_result_artifact("graph-powerbi", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
 
-        token = get_valid_token(settings, raw.get("user"))
+        token = get_valid_token(settings, user_id)
         workspace_id = str(raw.get("workspaceId", ""))
         top = int(raw.get("top", 50))
         search = str(raw.get("search", raw.get("query", "")))

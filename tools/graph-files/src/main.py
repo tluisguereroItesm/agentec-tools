@@ -58,6 +58,7 @@ from graph_runtime import (
     init_login,
     poll_login,
     resolve_graph_settings,
+    resolve_session_user,
     write_result_artifact,
 )
 
@@ -276,6 +277,71 @@ def action_summarize(token: str, drive_prefix: str, item_id: str, max_chars: int
     return {"action": "summarize", **data, "summary": "\n".join(summary_lines)}
 
 
+def _safe_filename(name: str) -> str:
+    """Sanitiza el nombre del archivo para evitar path traversal y caracteres raros."""
+    name = os.path.basename(name).strip()
+    name = re.sub(r"[^\w.\-]", "_", name)
+    return name or "download"
+
+
+def _downloads_dir() -> Path:
+    base = os.environ.get("AGENTEC_DOWNLOADS_DIR", "").strip()
+    if not base:
+        raise RuntimeError(
+            "CONFIG_ERROR: AGENTEC_DOWNLOADS_DIR no está definida. "
+            "Configúrala en docker-compose.yml (agentec-mcp-server-py.environment)."
+        )
+    path = Path(base)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def action_download(token: str, drive_prefix: str, item_id: str, raw: dict) -> dict:
+    """Descarga un archivo de OneDrive y lo persiste en el directorio de downloads."""
+    if not item_id:
+        raise RuntimeError("MISSING_ARG: falta 'id' para action=download")
+
+    meta = _graph(
+        token,
+        f"{drive_prefix}/items/{item_id}"
+        f"?$select=id,name,size,lastModifiedDateTime,webUrl,file",
+    )
+
+    requested_name = str(raw.get("saveAs", "")).strip()
+    filename = _safe_filename(requested_name or meta.get("name", "download"))
+
+    overwrite = bool(raw.get("overwrite", False))
+    dest = _downloads_dir() / filename
+    if dest.exists() and not overwrite:
+        stem, suffix = dest.stem, dest.suffix
+        counter = 1
+        while dest.exists():
+            dest = _downloads_dir() / f"{stem}_{counter}{suffix}"
+            counter += 1
+
+    graph_download(f"{BASE_URL}{drive_prefix}/items/{item_id}/content", token, dest)
+
+    # Ruta visible para el gateway (donde el agente puede luego leer el archivo)
+    gateway_base = os.environ.get("AGENTEC_DOWNLOADS_GATEWAY_PATH", "").strip().rstrip("/")
+    if not gateway_base:
+        raise RuntimeError(
+            "CONFIG_ERROR: AGENTEC_DOWNLOADS_GATEWAY_PATH no está definida. "
+            "Configúrala en docker-compose.yml (agentec-mcp-server-py.environment)."
+        )
+    gateway_path = f"{gateway_base}/{dest.name}"
+
+    return {
+        "action": "download",
+        "status": "downloaded",
+        "id": item_id,
+        "name": meta.get("name", ""),
+        "sizeKb": round(meta.get("size", 0) / 1024, 1),
+        "localPath": str(dest),
+        "gatewayPath": gateway_path,
+        "webUrl": meta.get("webUrl", ""),
+    }
+
+
 def cli() -> None:
     input_file = sys.argv[1] if len(sys.argv) > 1 else None
     if not input_file:
@@ -288,22 +354,23 @@ def cli() -> None:
         raw = _load_input(input_file)
         action = str(raw.get("action", "recent"))
         settings = resolve_graph_settings("files", raw)
+        user_id = resolve_session_user(settings, raw.get("user"))
 
         # ── Auth actions (no token required) ────────────────────────────────
         if action == "auth-login":
-            data = init_login(settings, raw.get("user"))
+            data = init_login(settings, user_id)
             result = build_success_result("graph-files auth-login iniciado", data, settings)
             result["artifactPath"] = write_result_artifact("graph-files", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
         if action == "auth-poll":
-            data = poll_login(settings, raw.get("user"))
+            data = poll_login(settings, user_id)
             result = build_success_result("graph-files auth-poll", data, settings)
             result["artifactPath"] = write_result_artifact("graph-files", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
 
-        token = get_valid_token(settings, raw.get("user"))
+        token = get_valid_token(settings, user_id)
         drive_prefix = _site_drive_prefix(settings, raw)
         top = int(raw.get("top", 20))
         max_chars = int(raw.get("maxChars", 8000))
@@ -316,6 +383,8 @@ def cli() -> None:
             data = action_read(token, drive_prefix, str(raw.get("id", "")), max_chars)
         elif action == "summarize":
             data = action_summarize(token, drive_prefix, str(raw.get("id", "")), max_chars)
+        elif action == "download":
+            data = action_download(token, drive_prefix, str(raw.get("id", "")), raw)
         else:
             raise RuntimeError(f"MISSING_ARG: action no soportada: {action}")
 

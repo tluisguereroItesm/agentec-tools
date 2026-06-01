@@ -1,3 +1,4 @@
+#agentec-tools/tools/graph-mail/src/main.py
 from __future__ import annotations
 
 import json
@@ -54,6 +55,7 @@ from graph_runtime import (
     init_login,
     poll_login,
     resolve_graph_settings,
+    resolve_session_user,
     write_result_artifact,
 )
 
@@ -488,22 +490,29 @@ def cli() -> None:
         raw = _load_input(input_file)
         action = ACTION_ALIASES.get(str(raw.get("action", "unread")), str(raw.get("action", "unread")))
         settings = resolve_graph_settings("mail", raw)
+        user_id = resolve_session_user(settings, raw.get("user"))
 
         # ── Auth actions (no token required) ────────────────────────────────
+        # En auth-login/poll usamos user_id normalizado (no raw.get("user")) para
+        # mantener la sesión consistente con las acciones que vienen después.
+        # NOTA: cuando se active multi-usuario real, esto cambia: auth-login/poll
+        # deberían usar el user crudo y las acciones de consumo deberían usar
+        # resolve_session_user para mapear al slot correcto. Hoy ambos caminos
+        # convergen al mismo slot (owner) por la heurística de resolve_session_user.
         if action == "auth-login":
-            data = init_login(settings, raw.get("user"))
+            data = init_login(settings, user_id)
             result = build_success_result("graph-mail auth-login iniciado", data, settings)
             result["artifactPath"] = write_result_artifact("graph-mail", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
         if action == "auth-poll":
-            data = poll_login(settings, raw.get("user"))
+            data = poll_login(settings, user_id)
             result = build_success_result("graph-mail auth-poll", data, settings)
             result["artifactPath"] = write_result_artifact("graph-mail", action, result)
             print(json.dumps(result, ensure_ascii=False))
             return
 
-        token = get_valid_token(settings, raw.get("user"))
+        token = get_valid_token(settings, user_id)
         graph_user_id = str(raw.get("graphUserId", ""))
         top = int(raw.get("top", 20))
         days = int(raw.get("days", 7))
